@@ -37160,10 +37160,17 @@ Sonic_CheckGoSuper:
     if gameRevision=2
 	; fixes a bug where the player can get stuck if transforming at the end of a level
 	tst.b	(Update_HUD_timer).w	; has Sonic reached the end of the act?
-	beq.s	return_1ABA4		; if yes, branch
+	bne.s	Sonic_TurnSuper		; if yes, branch
+	else
+	jmp		Sonic_TurnSuper 
     endif
 
-    if fixBugs
+; ---------------------------------------------------------------------------
+return_1ABA4:
+	rts
+
+Sonic_TurnSuper:
+	if fixBugs
 	; If Sonic was executing a roll-jump when he turned Super, then this
 	; will remove him from that state. The original code forgot to do
 	; this.
@@ -37174,6 +37181,7 @@ Sonic_CheckGoSuper:
 	move.b	#1,(Super_Sonic_palette).w
 	move.b	#$F,(Palette_timer).w
 	move.b	#1,(Super_Sonic_flag).w
+	move.w	#60,(Super_Sonic_frame_count).w
 	move.b	#$81,obj_control(a0)
 	move.b	#AniIDSupSonAni_Transform,anim(a0)			; use transformation animation
 	move.b	#ObjID_SuperSonicStars,(SuperSonicStars+id).w ; load Obj7E (Super Sonic stars object) at $FFFFD040
@@ -37187,9 +37195,6 @@ Sonic_CheckGoSuper:
 	move.w	#MusID_SuperSonic,d0
 	jmp	(PlayMusic).l	; load the Super Sonic song and return
 
-; ---------------------------------------------------------------------------
-return_1ABA4:
-	rts
 ; End of subroutine Sonic_CheckGoSuper
 
 
