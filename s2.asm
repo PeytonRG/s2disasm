@@ -17,14 +17,14 @@
 ; >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 ; ASSEMBLY OPTIONS:
 ;
-gameRevision = 1
+gameRevision = 2
 ;	| If 0, a REV00 ROM is built
 ;	| If 1, a REV01 ROM is built, which contains some fixes
 ;	| If 2, a (theoretical) REV02 ROM is built, which contains even more fixes
 padToPowerOfTwo = 1
 ;	| If 1, pads the end of the ROM to the next power of two bytes (for real hardware)
 ;
-fixBugs = 0
+fixBugs = 1
 ;	| If 1, enables all bug-fixes
 ;	| See also the 'FixDriverBugs' flag in 's2.sounddriver.asm'
 allOptimizations = 0
@@ -4445,8 +4445,9 @@ TitleScreen_Loop:
     else
 	move.w	#emerald_hill_zone_act_1,(Current_ZoneAndAct).w
     endif
-	tst.b	(Level_select_flag).w	; has level select cheat been entered?
-	beq.s	+			; if not, branch
+	; Always go to level select when A is held
+	; tst.b	(Level_select_flag).w	; has level select cheat been entered?
+	; beq.s	+			; if not, branch
 	btst	#button_A,(Ctrl_1_Held).w ; is A held down?
 	beq.s	+	 		; if not, branch
 	move.b	#GameModeID_LevelSelect,(Game_Mode).w ; => LevelSelectMenu
@@ -37122,8 +37123,11 @@ Sonic_JumpHeight:
 	bne.s	+		; if yes, branch
 	move.w	d1,y_vel(a0)	; immediately reduce Sonic's upward speed to d1
 +
-	tst.b	y_vel(a0)		; is Sonic exactly at the height of his jump?
-	beq.s	Sonic_CheckGoSuper	; if yes, test for turning into Super Sonic
+	tst.b   (Control_Locked).w      ; Are Controls locked?
+	bne.s   return_1AB36            ; If so, branch, and do not bother with Super code
+	move.b  (Ctrl_1_Press_Logical).w,d0
+	andi.b  #button_B_mask|button_C_mask|button_A_mask,d0 ; is a jump button pressed?
+	bne.s   Sonic_CheckGoSuper      ; if yes, test for turning into Super Sonic
 	rts
 ; ---------------------------------------------------------------------------
 ; loc_1AB22:
@@ -37220,6 +37224,7 @@ Sonic_Super:
 	bne.s	return_1AC3C
 ; loc_1ABF2:
 Sonic_RevertToNormal:
+	move.b	#0,(MainCharacter+obj_control).w	; restore Sonic's movement
 	move.b	#2,(Super_Sonic_palette).w	; Remove rotating palette
 	move.w	#$28,(Palette_frame).w
 	move.b	#0,(Super_Sonic_flag).w
