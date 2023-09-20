@@ -41,7 +41,7 @@ gameRevision = 3
 padToPowerOfTwo = 1
 ;	| If 1, pads the end of the ROM to the next power of two bytes (for real hardware)
 ;
-fixBugs = 0
+fixBugs = 1
 ;	| If 1, enables all bug-fixes
 ;	| See also the 'FixDriverBugs' flag in 's2.sounddriver.asm'
 allOptimizations = 0
@@ -65,7 +65,7 @@ relativeLea = 0|(gameRevision<2)|allOptimizations
 useFullWaterTables = 0
 ;	| If 1, zone offset tables for water levels cover all level slots instead of only slots 8-$F
 ;	| Set to 1 if you've shifted level IDs around or you want water in levels with a level slot below 8
-standaloneKiS2 = 0
+standaloneKiS2 = 1
 ;	| If 1, a standalone version of KiS2 is built that does not depend on S2 or S&K
 ;
 
@@ -4698,8 +4698,9 @@ TitleScreen_Loop:
     else
 	move.w	#emerald_hill_zone_act_1,(Current_ZoneAndAct).w
     endif
-	tst.b	(Level_select_flag).w	; has level select cheat been entered?
-	beq.s	+			; if not, branch
+	; Always go to level select when A is held
+	; tst.b	(Level_select_flag).w	; has level select cheat been entered?
+	; beq.s	+			; if not, branch
 	btst	#button_A,(Ctrl_1_Held).w ; is A held down?
 	beq.s	+	 		; if not, branch
 	move.b	#GameModeID_LevelSelect,(Game_Mode).w ; => LevelSelectMenu
@@ -13348,11 +13349,13 @@ debug_cheat:
 	rev02even
 ; byte_97C5
 super_sonic_cheat:
+	; Revert the all emeralds cheat back to Sonic 2's
 	; 16777216 is 2^24. It's unclear what the significance of '24' is,
 	; but the Motorola 68000 *does* have a 24-bit address bus. It could
 	; also be a reference to Sonic 2's release date in the EU and US,
 	; which was the 24th of November.
-	dc.b   1,   6,   7,   7,   7,   2,   1,   6, $FF
+	; dc.b   1,   6,   7,   7,   7,   2,   1,   6, $FF
+	dc.b   4,   1,   2,   6,   $FF
 	rev02even
     else
 level_select_cheat:
