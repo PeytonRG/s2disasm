@@ -25893,6 +25893,8 @@ loc_121B8:
 	addi.w	#224,d0
 	cmp.w	y_pos(a0),d0
 	blo.s	Obj37_Delete
+	cmpi.w	#$FF00,($FFFFEECC).w		; is vertical wrapping enabled?
+	beq.w	DisplaySprite			; if so, branch
 	bra.w	DisplaySprite
 ; ===========================================================================
 
@@ -31356,6 +31358,8 @@ RunObjects_End:
 ; this skips certain objects to make enemies and things pause when Sonic dies
 ; loc_15FE6:
 RunObjectsWhenPlayerIsDead:
+	cmpi.b	#$C,(MainCharacter+routine).w	; Has Sonic drowned?
+	beq.s	RunObject			; If so, run objects a little longer
 	moveq	#(Reserved_Object_RAM_End-Reserved_Object_RAM)/object_size-1,d7
 	bsr.s	RunObject	; run the first $10 objects normally
 	moveq	#(Dynamic_Object_RAM_End-Dynamic_Object_RAM)/object_size-1,d7
@@ -37807,6 +37811,7 @@ Obj01_Index:	offsetTable
 		offsetTableEntry.w Obj01_Dead		;  6
 		offsetTableEntry.w Obj01_Gone		;  8
 		offsetTableEntry.w Obj01_Respawning	; $A
+		offsetTableEntry.w Obj01_Drowned	; $C
 ; ===========================================================================
 ; loc_19F76: Obj_01_Sub_0: Obj01_Main:
 Obj01_Init:
@@ -41279,6 +41284,17 @@ Obj01_Respawning:
 ; ===========================================================================
 
 ; ---------------------------------------------------------------------------
+; Sonic when he's drowning
+; ---------------------------------------------------------------------------
+Obj01_Drowned:
+	bsr.w	ObjectMove	; Make Sonic able to move
+	addi.w	#$10,y_vel(a0)	; Apply gravity
+	bsr.w	Sonic_RecordPos	; Record position
+	bsr.w	Sonic_Animate	; Animate Sonic
+	bsr.w	LoadSonicDynPLC	; Load Sonic's DPLCs
+	bra.w	DisplaySprite	; And finally, display Sonic
+
+; ---------------------------------------------------------------------------
 ; Subroutine to animate Sonic's sprites
 ; See also: AnimateSprite
 ; ---------------------------------------------------------------------------
@@ -42111,6 +42127,7 @@ Obj02_Index:	offsetTable
 		offsetTableEntry.w Obj02_Dead		;  6
 		offsetTableEntry.w Obj02_Gone		;  8
 		offsetTableEntry.w Obj02_Respawning	; $A
+		offsetTableEntry.w Obj02_Drowned	; $C
 ; ===========================================================================
 ; loc_1B8D8: Obj02_Main:
 Obj02_Init:
@@ -44444,6 +44461,17 @@ Obj02_Respawning:
 ; ===========================================================================
 
 ; ---------------------------------------------------------------------------
+; Tails when he's drowning
+; ---------------------------------------------------------------------------
+Obj02_Drowned:
+	bsr.w	ObjectMove	; Make Tails able to move
+	addi.w	#$10,y_vel(a0)	; Apply gravity
+	bsr.w	Tails_RecordPos	; Record position
+	bsr.s	Tails_Animate	; Animate Tails
+	bsr.w	LoadTailsDynPLC	; Load Tails's DPLCs
+	bra.w	DisplaySprite	; And finally, display Tails
+
+; ---------------------------------------------------------------------------
 ; Subroutine to animate Tails' sprites
 ; See also: AnimateSprite and Sonic_Animate
 ; ---------------------------------------------------------------------------
@@ -45362,6 +45390,7 @@ Obj0A_ReduceAir:
 	move.w	#0,y_vel(a0)
 	move.w	#0,x_vel(a0)
 	move.w	#0,inertia(a0)
+	move.b	#$C,routine(a0)	; Force the character to drown
 	movea.l	(sp)+,a0 ; load 0bj address ; restore a0 = obj0A
 	cmpa.w	#MainCharacter,a2
 	bne.s	+	; if it isn't player 1, branch
@@ -45371,19 +45400,10 @@ Obj0A_ReduceAir:
 ; ===========================================================================
 ; loc_1D708:
 Obj0A_PlayerHasDrowned:
-	subq.w	#1,obj0a_time_until_freeze(a0)
-	bne.s	+
-	; Signal that the player is dead.
+	subq.w	#1,objoff_2C(a0)
+	bne.s	Obj0A_MakeBubbleMaybe		; Make it jump straight to this location
 	move.b	#6,routine(a2)
 	rts
-; ---------------------------------------------------------------------------
-+	; Move the player downwards as they drown.
-	move.l	a0,-(sp)
-	movea.l	a2,a0
-	jsr	(ObjectMove).l
-	addi.w	#$10,y_vel(a0)
-	movea.l	(sp)+,a0 ; load 0bj address
-	bra.s	Obj0A_MakeBubbleMaybe
 ; ===========================================================================
 ; BranchTo_Obj0A_MakeItem
 BranchTo_Obj0A_MakeBubbleNow ; BranchTo
@@ -91223,8 +91243,13 @@ Dynamic_HTZ:
 	neg.w	d1
 	asr.w	#3,d1
 	move.w	(Camera_X_pos).w,d0
+	move.w	d0,d2	; Copy to d2
+	andi.w	#$F,d2	; Is the lower nibble zero?
+	seq.b	d2	; If yes, set low byte of d2 to $FF
+	ext.w	d2	; Low word of d2 = -1
 	lsr.w	#4,d0
-	add.w	d1,d0
+	add.w	d1,d0	; (*) See notes
+	add.w	d2,d0	; Shift the parallax to the correct value
 	subi.w	#$10,d0
 	divu.w	#$30,d0
 	swap	d0
