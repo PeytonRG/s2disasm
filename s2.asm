@@ -27,6 +27,7 @@ padToPowerOfTwo = 1
 fixBugs = 1
 ;	| If 1, enables all bug-fixes
 ;	| See also the 'FixDriverBugs' flag in 's2.sounddriver.asm'
+;	| See also the 'FixMusicAndSFXDataBugs' flag in 'build.lua'
 allOptimizations = 0
 ;	| If 1, enables all optimizations
 ;
@@ -64,6 +65,7 @@ useFullWaterTables = 0
 
 ; >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 ; Expressing SMPS bytecode in a portable and human-readable form
+FixMusicAndSFXDataBugs = fixBugs
 SonicDriverVer = 2 ; Tell SMPS2ASM that we are targetting Sonic 2's sound driver
 	include "sound/_smps2asm_inc.asm"
 
@@ -4701,7 +4703,7 @@ Level:
 	jsr	(LoadTitleCard).l ; load title card patterns
 	move	#$2300,sr
 	moveq	#0,d0
-	move.w	d0,(Timer_frames).w
+	move.w	d0,(Level_frame_counter).w
 	move.b	(Current_Zone).w,d0
 
 	; multiply d0 by 12, the size of a level art load block
@@ -5015,7 +5017,7 @@ Level_MainLoop:
 	bsr.w	PauseGame
 	move.b	#VintID_Level,(Vint_routine).w
 	bsr.w	WaitForVint
-	addq.w	#1,(Timer_frames).w ; add 1 to level timer
+	addq.w	#1,(Level_frame_counter).w ; add 1 to level timer
 	bsr.w	MoveSonicInDemo
 	bsr.w	WaterEffects
 	jsr	(RunObjects).l
@@ -5167,7 +5169,7 @@ UpdateWaterSurface:
 	andi.b	#button_start_mask,d0
 	bne.s	+
     endif
-	btst	#0,(Timer_frames+1).w
+	btst	#0,(Level_frame_counter+1).w
 	beq.s	+
 	addi.w	#$20,d1
 +		; match obj x-position to screen position
@@ -13084,7 +13086,7 @@ EndingSequence:
 	moveq	#0,d0
 	move.w	d0,(Debug_placement_mode).w
 	move.w	d0,(Level_Inactive_flag).w
-	move.w	d0,(Timer_frames).w
+	move.w	d0,(Level_frame_counter).w
 	move.w	d0,(Camera_X_pos).w
 	move.w	d0,(Camera_Y_pos).w
 	move.w	d0,(Camera_X_pos_copy).w
@@ -13123,7 +13125,7 @@ EndingSequence:
 -
 	move.b	#VintID_Ending,(Vint_routine).w
 	bsr.w	WaitForVint
-	addq.w	#1,(Timer_frames).w
+	addq.w	#1,(Level_frame_counter).w
 	jsr	(RandomNumber).l
 	jsr	(RunObjects).l
 	jsr	(BuildSprites).l
@@ -13164,7 +13166,7 @@ EndgameCredits:
 	clr.b	(Screen_Shaking_Flag).w
 	moveq	#0,d0
 	move.w	d0,(Level_Inactive_flag).w
-	move.w	d0,(Timer_frames).w
+	move.w	d0,(Level_frame_counter).w
 	move.w	d0,(Camera_X_pos).w
 	move.w	d0,(Camera_Y_pos).w
 	move.w	d0,(Camera_X_pos_copy).w
@@ -15818,9 +15820,11 @@ SwScrl_WFZ_Normal_Array:
 ; ===========================================================================
 ; loc_C964:
 SwScrl_HTZ:
-	; Use different background scrolling code for two player mode.
+	; Use different background scrolling code for two player mode...
+	; despite the fact that Hill Top Zone is not normally playable in
+	; two-player mode.
 	tst.w	(Two_player_mode).w
-	bne.w	SwScrl_HTZ_2P	; never used in normal gameplay
+	bne.w	SwScrl_HTZ_2P
 
 	tst.b	(Screen_Shaking_Flag_HTZ).w
 	bne.w	HTZ_Screen_Shake
@@ -15843,36 +15847,67 @@ SwScrl_HTZ:
 -	move.l	d0,(a1)+
 	dbf	d1,-
 
-	; The remaining lines compose the animating clouds.
+	; The remaining lines of code in this function compose the animating clouds.
 	move.l	d0,d4
 	move.w	(TempArray_LayerDef+$22).w,d0
 	addq.w	#4,(TempArray_LayerDef+$22).w
+
+	; Get delta between camera X and the cloud scroll value.
 	sub.w	d0,d2
+
+	; This big block of code divides and then multiplies the delta by roughly 2.28,
+	; effectively subtracting 'delta modulo 2.28' from the delta.
+	; I have no idea why this is necessary.
+
+	; Start by reducing to 44% (100% divided by 2.28)...
 	move.w	d2,d0
+    if fixBugs
+	; See below.
+	moveq	#0,d1
+    endif
 	move.w	d0,d1
-	asr.w	#1,d0
-	asr.w	#4,d1
-	sub.w	d1,d0
+	asr.w	#1,d0 ; Divide d0 by 2
+    if fixBugs
+	; See below.
+	swap	d1
+	asr.l	#4,d1 ; Divide d1 by 16, preserving the remainder in the lower 16 bits
+	swap	d1
+    else
+	asr.w	#4,d1 ; Divide d1 by 16, discarding the remainder
+    endif
+	sub.w	d1,d0 ; 100 / 2 - 100 / 16 = 44
 	ext.l	d0
-	asl.l	#8,d0
-	divs.w	#$70,d0
+	; ...then increase the result to 228%, effectively undoing the reduction to 44% from earlier (0.44 x 2.28 = 1).
+	asl.l	#8,d0 ; Multiply by 256
+	divs.w	#256*44/100,d0 ; Divide by 112, which is 44% of 256
 	ext.l	d0
+
+	; We are done subtracting 'delta modulo 2.28' from the delta.
+
+	; Multiply the delta by 256.
 	asl.l	#8,d0
-	lea	(TempArray_LayerDef).w,a2	; See 'loc_3FE5C'.
+
+	lea	(TempArray_LayerDef).w,a2	; See 'Dynamic_HTZ.doCloudArt'.
+
+    if fixBugs
+	move.l	d1,d3 ; d1 holds the original, pre-modulo delta divided by 16.
+    else
+	; d3 is used as a fixed-point accumulator here, with the upper 16 bits
+	; holding the integer part, and the lower 16 bits holding the decimal
+	; part. This accumulator is initialised to the value of the delta
+	; divided by 16, however, the decimal part of this division was not
+	; preserved. This loss of precision causes the clouds to scroll with a
+	; visible jerkiness.
 	moveq	#0,d3
-	move.w	d1,d3
+	move.w	d1,d3 ; d1 holds the original, pre-modulo delta divided by 16.
+    endif
+
+    rept 3
 	swap	d3
 	add.l	d0,d3
 	swap	d3
 	move.w	d3,(a2)+
-	swap	d3
-	add.l	d0,d3
-	swap	d3
-	move.w	d3,(a2)+
-	swap	d3
-	add.l	d0,d3
-	swap	d3
-	move.w	d3,(a2)+
+    endm
 	move.w	d3,(a2)+
 	swap	d3
 	add.l	d0,d3
@@ -16007,7 +16042,7 @@ HTZ_Screen_Shake:
 	beq.s	+
 
 	; Make the screen shake.
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.w	#$3F,d0
 	lea_	SwScrl_RippleData,a1
 	lea	(a1,d0.w),a1
@@ -16456,7 +16491,7 @@ SwScrl_MCZ:
 	tst.b	(Screen_Shaking_Flag).w
 	beq.s	+
 
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.w	#$3F,d0
 	lea_	SwScrl_RippleData,a1
 	lea	(a1,d0.w),a1
@@ -17440,7 +17475,7 @@ SwScrl_DEZ:
 	bpl.s	+
 	clr.b	(Screen_Shaking_Flag).w
 +
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.w	#$3F,d0
 	lea_	SwScrl_RippleData,a1
 	lea	(a1,d0.w),a1
@@ -17588,7 +17623,7 @@ SwScrl_DEZ:
 	bpl.s	+
 	clr.b	(Screen_Shaking_Flag).w
 +
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.w	#$3F,d0
 	lea_	SwScrl_RippleData,a1
 	lea	(a1,d0.w),a1
@@ -17685,7 +17720,7 @@ SwScrl_ARZ:
 	tst.b	(Screen_Shaking_Flag).w
 	beq.s	.screenNotShaking
 
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.w	#$3F,d0
 	lea_	SwScrl_RippleData,a1
 	lea	(a1,d0.w),a1
@@ -20754,7 +20789,7 @@ LevEvents_HTZ_Routine2:
 	bne.s	.sinking
 	cmpi.w	#320,(Camera_BG_Y_offset).w
 	beq.s	.flip_delay
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	move.w	d0,d1
 	andi.w	#3,d0
 	bne.s	LevEvents_HTZ_Routine2_Continue
@@ -20768,7 +20803,7 @@ LevEvents_HTZ_Routine2:
 .sinking:
 	cmpi.w	#224,(Camera_BG_Y_offset).w
 	beq.s	.flip_delay
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	move.w	d0,d1
 	andi.w	#3,d0
 	bne.s	LevEvents_HTZ_Routine2_Continue
@@ -20998,7 +21033,7 @@ LevEvents_HTZ2_Routine2:
 	bne.s	.sinking
 	cmpi.w	#$2C0,(Camera_BG_Y_offset).w
 	beq.s	.flip_delay
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	move.w	d0,d1
 	andi.w	#3,d0
 	bne.s	LevEvents_HTZ2_Routine2_Continue
@@ -21012,7 +21047,7 @@ LevEvents_HTZ2_Routine2:
 .sinking:
 	cmpi.w	#0,(Camera_BG_Y_offset).w
 	beq.s	.flip_delay
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	move.w	d0,d1
 	andi.w	#3,d0
 	bne.s	LevEvents_HTZ2_Routine2_Continue
@@ -21107,7 +21142,7 @@ LevEvents_HTZ2_Routine4:
 	bne.s	.sinking
 	cmpi.w	#$300,(Camera_BG_Y_offset).w
 	beq.s	.flip_delay
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	move.w	d0,d1
 	andi.w	#3,d0
 	bne.s	LevEvents_HTZ2_Routine4_Continue
@@ -21121,7 +21156,7 @@ LevEvents_HTZ2_Routine4:
 .sinking:
 	cmpi.w	#0,(Camera_BG_Y_offset).w
 	beq.s	.flip_delay
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	move.w	d0,d1
 	andi.w	#3,d0
 	bne.s	LevEvents_HTZ2_Routine4_Continue
@@ -21480,7 +21515,7 @@ LevEvents_MCZ2_Routine3:
 LevEvents_MCZ2_Routine4:
 	tst.b	(Screen_Shaking_Flag).w
 	beq.s	+
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.w	#$1F,d0
 	bne.s	+
 	move.w	#SndID_Rumbling2,d0
@@ -22377,15 +22412,29 @@ Obj11_Depress:
 ; ===========================================================================
 ; seems to be bridge piece vertical position offset data
 Obj11_DepressionOffsets: ; byte_FA98:
-	dc.b   2,  4,  6,  8,  8,  6,  4,  2,  0,  0,  0,  0,  0,  0,  0,  0; 16
-	dc.b   2,  4,  6,  8, $A,  8,  6,  4,  2,  0,  0,  0,  0,  0,  0,  0; 32
-	dc.b   2,  4,  6,  8, $A, $A,  8,  6,  4,  2,  0,  0,  0,  0,  0,  0; 48
-	dc.b   2,  4,  6,  8, $A, $C, $A,  8,  6,  4,  2,  0,  0,  0,  0,  0; 64
-	dc.b   2,  4,  6,  8, $A, $C, $C, $A,  8,  6,  4,  2,  0,  0,  0,  0; 80
-	dc.b   2,  4,  6,  8, $A, $C, $E, $C, $A,  8,  6,  4,  2,  0,  0,  0; 96
-	dc.b   2,  4,  6,  8, $A, $C, $E, $E, $C, $A,  8,  6,  4,  2,  0,  0; 112
-	dc.b   2,  4,  6,  8, $A, $C, $E,$10, $E, $C, $A,  8,  6,  4,  2,  0; 128
-	dc.b   2,  4,  6,  8, $A, $C, $E,$10,$10, $E, $C, $A,  8,  6,  4,  2; 144
+    if 0
+	; This data was in Sonic 1, but removed in Sonic 2.
+	; By removing it, bridges that are less than 8 logs long no longer work.
+	; If this data is restored, then Obj11_Depress should be modified to not
+	; subtract $80 from Obj11_DepressionOffsets.
+	dc.b   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0; 0 logs
+	dc.b   2,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0; 1 log
+	dc.b   2,  2,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0; 2 logs
+	dc.b   2,  4,  2,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0; 3 logs
+	dc.b   2,  4,  4,  2,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0; 4 logs
+	dc.b   2,  4,  6,  4,  2,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0; 5 logs
+	dc.b   2,  4,  6,  6,  4,  2,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0; 6 logs
+	dc.b   2,  4,  6,  8,  6,  4,  2,  0,  0,  0,  0,  0,  0,  0,  0,  0; 7 logs
+    endif
+	dc.b   2,  4,  6,  8,  8,  6,  4,  2,  0,  0,  0,  0,  0,  0,  0,  0; 8 logs
+	dc.b   2,  4,  6,  8, $A,  8,  6,  4,  2,  0,  0,  0,  0,  0,  0,  0; 9 logs
+	dc.b   2,  4,  6,  8, $A, $A,  8,  6,  4,  2,  0,  0,  0,  0,  0,  0; 10 logs
+	dc.b   2,  4,  6,  8, $A, $C, $A,  8,  6,  4,  2,  0,  0,  0,  0,  0; 11 logs
+	dc.b   2,  4,  6,  8, $A, $C, $C, $A,  8,  6,  4,  2,  0,  0,  0,  0; 12 logs
+	dc.b   2,  4,  6,  8, $A, $C, $E, $C, $A,  8,  6,  4,  2,  0,  0,  0; 13 logs
+	dc.b   2,  4,  6,  8, $A, $C, $E, $E, $C, $A,  8,  6,  4,  2,  0,  0; 14 logs
+	dc.b   2,  4,  6,  8, $A, $C, $E,$10, $E, $C, $A,  8,  6,  4,  2,  0; 15 logs
+	dc.b   2,  4,  6,  8, $A, $C, $E,$10,$10, $E, $C, $A,  8,  6,  4,  2; 16 logs
 
 ; something else important for bridge depression to work (phase? bridge size adjustment?)
 byte_FB28:
@@ -25651,7 +25700,7 @@ Obj2E_Init:
 	tst.w	(Two_player_mode).w	; is it two player mode?
 	beq.s	loc_128C6		; if not, branch
 	; give 'random' item in two player mode
-	move.w	(Timer_frames).w,d0	; use the timer to determine which item
+	move.w	(Level_frame_counter).w,d0	; use the timer to determine which item
 	andi.w	#7,d0	; and 7 means there are 8 different items
 	addq.w	#1,d0	; add 1 to prevent getting the static monitor
 	tst.w	(Two_player_items).w	; are monitors set to 'teleport only'?
@@ -27891,7 +27940,7 @@ loc_142E2:
 	moveq	#$C,d0
 	add.b	anim_frame(a0),d0
 	move.b	d0,mapping_frame(a0)
-	btst	#4,(Timer_frames+1).w
+	btst	#4,(Level_frame_counter+1).w
 	bne.w	DisplaySprite
 	rts
 ; ===========================================================================
@@ -33469,11 +33518,11 @@ ChkLoadObj_2P:
 ; ---------------------------------------------------------------------------
 
 +
-	btst	#4,2(a0)	; the bit that's being tested for here should always be zero,
-	beq.s	+		; but assuming it weren't and this branch isn't taken,
-	bsr.w	AllocateObject	; then this object would not be loaded into one of the 12
-	bne.s	return_17FD8	; byte blocks after Dynamic_Object_RAM_2P_End and would most
-	bra.s	ChkLoadObj_2P_LoadData	; likely end up somwhere before this in Dynamic_Object_RAM
+	btst	#4,2(a0)
+	beq.s	+			; if this branch isn't taken, then this object would
+	bsr.w	AllocateObject		; not be loaded into one of the 12 byte blocks after
+	bne.s	return_17FD8		; Dynamic_Object_RAM_2P_End and would most likely end
+	bra.s	ChkLoadObj_2P_LoadData	; up somewhere before this in Dynamic_Object_RAM
 ; ---------------------------------------------------------------------------
 
 +
@@ -38256,7 +38305,7 @@ SAnim_SuperWalk:
 +
 	move.b	d0,mapping_frame(a0)
 	add.b	d3,mapping_frame(a0)
-	move.b	(Timer_frames+1).w,d1
+	move.b	(Level_frame_counter+1).w,d1
 	andi.b	#3,d1
 	bne.s	+
 	cmpi.b	#$B5,mapping_frame(a0)
@@ -38833,7 +38882,7 @@ TailsCPU_Spawning:
 	move.b	(Ctrl_2_Held_Logical).w,d0
 	andi.b	#button_B_mask|button_C_mask|button_A_mask|button_start_mask,d0
 	bne.s	TailsCPU_Respawn
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.w	#$3F,d0
 	bne.s	return_1BB88
 	tst.b	obj_control(a1)
@@ -39079,7 +39128,7 @@ TailsCPU_Normal_FilterAction:
 	bne.s	TailsCPU_Normal_SendAction
 	move.b	#0,(Tails_CPU_jumping).w
 +
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.w	#$FF,d0
 	beq.s	+
 	cmpi.w	#$40,d2
@@ -39093,7 +39142,7 @@ TailsCPU_Normal_FilterAction:
 	blo.s	TailsCPU_Normal_SendAction
 ; loc_1BE06:
 TailsCPU_Normal_FilterAction_Part2:
-	move.b	(Timer_frames+1).w,d0
+	move.b	(Level_frame_counter+1).w,d0
 	andi.b	#$3F,d0
 	bne.s	TailsCPU_Normal_SendAction
 	cmpi.b	#AniIDSonAni_Duck,anim(a0)
@@ -39199,7 +39248,7 @@ TailsCPU_Panic:
 	bset	#0,status(a0)
 +
 	move.w	#(button_down_mask<<8)|button_down_mask,(Ctrl_2_Logical).w
-	move.b	(Timer_frames+1).w,d0
+	move.b	(Level_frame_counter+1).w,d0
 	andi.b	#$7F,d0
 	beq.s	TailsCPU_Panic_ReleaseDash
 
@@ -39211,7 +39260,7 @@ TailsCPU_Panic:
 ; loc_1BF0C:
 TailsCPU_Panic_ChargingDash:
 	move.w	#(button_down_mask<<8)|button_down_mask,(Ctrl_2_Logical).w
-	move.b	(Timer_frames+1).w,d0
+	move.b	(Level_frame_counter+1).w,d0
 	andi.b	#$7F,d0
 	bne.s	TailsCPU_Panic_RevDash
 
@@ -41943,7 +41992,7 @@ Obj0A_MakeBubbleNow:
 	jsr	(RandomNumber).l
 	move.b	d0,angle(a1)
 
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.b	#3,d0
 	bne.s	Obj0A_DoneCreatingBubble
 
@@ -44800,7 +44849,7 @@ Obj44_BumpCharacter:
 	sub.w	x_pos(a1),d1
 	sub.w	y_pos(a1),d2
 	jsr	(CalcAngle).l
-	move.b	(Timer_frames).w,d1
+	move.b	(Level_frame_counter).w,d1
 	andi.w	#3,d1
 	add.w	d1,d0
 	jsr	(CalcSine).l
@@ -47514,7 +47563,7 @@ Obj14_YOffsets:
 
 ; loc_21C66:
 Obj14_Animate:
-	move.b	(Timer_frames+1).w,d0
+	move.b	(Level_frame_counter+1).w,d0
 	andi.b	#3,d0
 	bne.s	Obj14_SetSolToFaceMainCharacter
 	bchg	#palette_bit_0,art_tile(a0)
@@ -47643,7 +47692,7 @@ Obj16_Wait:
 ; ===========================================================================
 ; loc_21E68:
 Obj16_Slide:
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	andi.w	#$F,d0	; play the sound only every 16 frames
 	bne.s	+
 	move.w	#SndID_HTZLiftClick,d0
@@ -48026,7 +48075,7 @@ Obj1B_Init:
 
 ; loc_222F8:
 Obj1B_Main:
-	move.b	(Timer_frames+1).w,d0
+	move.b	(Level_frame_counter+1).w,d0
 	andi.b	#2,d0
 	move.b	d0,mapping_frame(a0)
 	move.w	x_pos(a0),d0
@@ -52096,7 +52145,7 @@ Obj2C_Main:
 	beq.s	loc_261C2
 	move.w	objoff_2E(a0),d0
 	beq.s	+
-	add.b	(Timer_frames+1).w,d0
+	add.b	(Level_frame_counter+1).w,d0
 	andi.w	#$F,d0
 	bne.s	loc_26198
 +
@@ -52106,7 +52155,7 @@ Obj2C_Main:
 	bsr.s	Obj2C_CreateLeaves
 	tst.w	objoff_2E(a0)
 	bne.s	Obj2C_RemoveCollision
-	move.w	(Timer_frames).w,objoff_2E(a0)
+	move.w	(Level_frame_counter).w,objoff_2E(a0)
 	bra.s	Obj2C_RemoveCollision
 ; ===========================================================================
 
@@ -52120,7 +52169,7 @@ loc_26198:
 	bsr.s	Obj2C_CreateLeaves
 	tst.w	objoff_2E(a0)
 	bne.s	Obj2C_RemoveCollision
-	move.w	(Timer_frames).w,objoff_2E(a0)
+	move.w	(Level_frame_counter).w,objoff_2E(a0)
 ; loc_261BC:
 Obj2C_RemoveCollision:
 	clr.b	collision_property(a0)
@@ -53828,7 +53877,7 @@ Obj68_Init:
 	ori.b	#4,render_flags(a1)
 	move.b	#$10,width_pixels(a1)
 	move.b	#4,priority(a1)
-	move.w	(Timer_frames).w,d0
+	move.w	(Level_frame_counter).w,d0
 	lsr.w	#6,d0
 	move.w	d0,d1
 	andi.w	#1,d0
@@ -53909,7 +53958,7 @@ Obj68_Spike_Left:
 Obj68_Spike_Action:
 	tst.w	spikearoundblock_waiting(a0)
 	beq.s	+
-	move.b	(Timer_frames+1).w,d0
+	move.b	(Level_frame_counter+1).w,d0
 	andi.b	#$3F,d0
 	bne.s	Obj68_Spike_Action_End
 	clr.w	spikearoundblock_waiting(a0)
@@ -54012,7 +54061,7 @@ Obj6D_Action:
 +
 	tst.w	floorspike_waiting(a0)
 	beq.s	+
-	move.b	(Timer_frames+1).w,d0
+	move.b	(Level_frame_counter+1).w,d0
 	sub.b	subtype(a0),d0
 	andi.b	#$7F,d0
 	bne.s	Obj6D_Action_End
@@ -55301,7 +55350,7 @@ Obj70_LoadSubObject:
 ; loc_28652:
 Obj70_Main:
 	move.w	x_pos(a0),-(sp)
-	move.b	(Timer_frames+1).w,d0
+	move.b	(Level_frame_counter+1).w,d0
 	move.b	d0,d1
 	andi.w	#$F,d0
 	bne.s	loc_286CA
@@ -59542,7 +59591,7 @@ loc_2BC86:
 +
 	tst.w	objoff_2A(a0)
 	beq.w	+
-	btst	#0,(Timer_frames+1).w
+	btst	#0,(Level_frame_counter+1).w
 	beq.w	loc_2BD48
 	cmpi.w	#$10,objoff_2C(a0)
 	bhs.w	loc_2BD48
@@ -59586,7 +59635,7 @@ loc_2BD48:
 
 loc_2BD4E:
 	beq.w	+
-	btst	#0,(Timer_frames+1).w
+	btst	#0,(Level_frame_counter+1).w
 	beq.w	return_2BDF6
 	cmpi.w	#$10,objoff_2C(a0)
 	bhs.w	return_2BDF6
@@ -83043,7 +83092,7 @@ loc_3D3A4:
 	sub.w	x_pos(a1),d1
 	sub.w	y_pos(a1),d2
 	jsr	(CalcAngle).l
-	move.b	(Timer_frames).w,d1
+	move.b	(Level_frame_counter).w,d1
 	andi.w	#3,d1
 	add.w	d1,d0
 	jsr	(CalcSine).l
@@ -86712,8 +86761,12 @@ Dynamic_Null:
 ; ===========================================================================
 
 Dynamic_HTZ:
+	; More unused two-player code...
 	tst.w	(Two_player_mode).w
 	bne.w	Dynamic_Normal
+
+;.doMountainArt:
+	; Upload dynamic mountain art.
 	lea	(Anim_Counters).w,a3
 	moveq	#0,d0
 	move.w	(Camera_X_pos).w,d1
@@ -86731,7 +86784,7 @@ Dynamic_HTZ:
 	divu.w	#$30,d0
 	swap	d0
 	cmp.b	1(a3),d0
-	beq.s	BranchTo_loc_3FE5C
+	beq.s	.skipMountainArt
 	move.b	d0,1(a3)
 	move.w	d0,d2
 	andi.w	#7,d0
@@ -86744,11 +86797,11 @@ Dynamic_HTZ:
 	andi.w	#$38,d2
 	lsr.w	#2,d2
 	add.w	d2,d0
-	lea	word_3FD9C(pc,d0.w),a4
+	lea	.offsets(pc,d0.w),a4
 	moveq	#5,d5
 	move.w	#tiles_to_bytes(ArtTile_ArtUnc_HTZMountains),d4
-
-loc_3FD7C:
+; loc_3FD7C:
+.mountainLoop:
 	moveq	#-1,d1
 	move.w	(a4)+,d1
 	andi.l	#$FFFFFF,d1
@@ -86756,13 +86809,14 @@ loc_3FD7C:
 	moveq	#tiles_to_bytes(4)/2,d3	; DMA transfer length (in words)
 	jsr	(QueueDMATransfer).l
 	addi.w	#$80,d4
-	dbf	d5,loc_3FD7C
-
-BranchTo_loc_3FE5C ; BranchTo
-	bra.w	loc_3FE5C
+	dbf	d5,.mountainLoop
+; BranchTo_loc_3FE5C ; BranchTo
+.skipMountainArt:
+	bra.w	.doCloudArt
 ; ===========================================================================
 ; HTZ mountain art main RAM addresses?
-word_3FD9C:
+;word_3FD9C:
+.offsets:
 	dc.w   $80, $180, $280, $580, $600, $700	; 6
 	dc.w   $80, $180, $280, $580, $600, $700	; 12
 	dc.w  $980, $A80, $B80, $C80, $D00, $D80	; 18
@@ -86780,8 +86834,9 @@ word_3FD9C:
 	dc.w $3F80,$4080,$4480,$4580,$4880,$4900	; 90
 	dc.w $3F80,$4080,$4480,$4580,$4880,$4900	; 96
 ; ===========================================================================
-
-loc_3FE5C:
+; loc_3FE5C:
+.doCloudArt:
+	; Upload dynamic cloud art.
 	lea	(TempArray_LayerDef).w,a1
 	move.w	(Camera_X_pos).w,d2
 	neg.w	d2
@@ -86790,55 +86845,56 @@ loc_3FE5C:
 	lea	(ArtUnc_HTZClouds).l,a0
 	lea	(Chunk_Table+$7C00).l,a2
 	moveq	#16-1,d1
-
-loc_3FE78:
+; loc_3FE78:
+.cloudLoop:
 	move.w	(a1)+,d0
 	neg.w	d0
 	add.w	d2,d0
 	andi.w	#$1F,d0
 	lsr.w	#1,d0
-	bcc.s	loc_3FE8A
+	bcc.s	+
 	addi.w	#$200,d0
-
-loc_3FE8A:
++
 	lea	(a0,d0.w),a4
 	lsr.w	#1,d0
-	bcs.s	loc_3FEB4
-	move.l	(a4)+,(a2)+
-	adda.w	#$3C,a2
-	move.l	(a4)+,(a2)+
-	adda.w	#$3C,a2
-	move.l	(a4)+,(a2)+
-	adda.w	#$3C,a2
-	move.l	(a4)+,(a2)+
-	suba.w	#$C0,a2
-	adda.w	#$20,a0
-	dbf	d1,loc_3FE78
-	bra.s	loc_3FEEC
-; ===========================================================================
+	bcs.s	.odd
 
-loc_3FEB4:
+;.even:
+	; The same as below, but does not safely handle odd addresses.
+    rept 3
+	move.l	(a4)+,(a2)+
+	adda.w	#$40-4,a2
+    endm
+	move.l	(a4)+,(a2)+
+	suba.w	#$40*3,a2
+	adda.w	#$20,a0
+	dbf	d1,.cloudLoop
+	bra.s	.done
+; ===========================================================================
+; loc_3FEB4:
+.odd:
+	; The same as below, but safely handles odd addresses.
     rept 3
       rept 4
 	move.b	(a4)+,(a2)+
       endm
-	adda.w	#$3C,a2
+	adda.w	#$40-4,a2
     endm
     rept 4
 	move.b	(a4)+,(a2)+
     endm
-	suba.w	#$C0,a2
+	suba.w	#$40*3,a2
 	adda.w	#$20,a0
-	dbf	d1,loc_3FE78
-
-loc_3FEEC:
+	dbf	d1,.cloudLoop
+; loc_3FEEC:
+.done:
 	move.l	#(Chunk_Table+$7C00) & $FFFFFF,d1
 	move.w	#tiles_to_bytes(ArtTile_ArtUnc_HTZClouds),d2
 	move.w	#tiles_to_bytes(8)/2,d3	; DMA transfer length (in words)
 	jsr	(QueueDMATransfer).l
 	movea.l	(sp)+,a2
 	addq.w	#2,a3
-	bra.w	loc_3FF30
+	bra.w	Dynamic_Normal.customCounters
 ; ===========================================================================
 
 Dynamic_CNZ:
@@ -86862,8 +86918,8 @@ Dynamic_ARZ:
 
 Dynamic_Normal:
 	lea	(Anim_Counters).w,a3
-
-loc_3FF30:
+; loc_3FF30:
+.customCounters:
 	move.w	(a2)+,d6	; Get number of scripts in list
 	; S&K checks for empty lists, here
 ;	bpl.s	.listnotempty	; If there are any, continue
@@ -87968,7 +88024,7 @@ PatchHTZTiles:
 	lea	(Dynamic_Object_RAM_End-$1800).w,a4
 	jsrto	NemDecToRAM, JmpTo2_NemDecToRAM
 	lea	(Dynamic_Object_RAM_End-$1800).w,a1
-	lea_	word_3FD9C,a4
+	lea_	Dynamic_HTZ.offsets,a4
 	moveq	#0,d2
 	moveq	#8-1,d4
 
@@ -88022,7 +88078,7 @@ BuildHUD:
 	tst.w	(Ring_count).w
 	beq.s	++	; blink ring count if it's 0
 	moveq	#0,d1
-	btst	#3,(Timer_frames+1).w
+	btst	#3,(Level_frame_counter+1).w
 	bne.s	+	; only blink on certain frames
 	cmpi.b	#9,(Timer_minute).w	; should the minutes counter blink?
 	bne.s	+	; if not, branch
@@ -88031,7 +88087,7 @@ BuildHUD:
 	bra.s	++
 +
 	moveq	#0,d1
-	btst	#3,(Timer_frames+1).w
+	btst	#3,(Level_frame_counter+1).w
 	bne.s	+	; only blink on certain frames
 	addq.w	#1,d1	; set mapping frame for ring count blink
 	cmpi.b	#9,(Timer_minute).w
@@ -88058,7 +88114,7 @@ BuildHUD_P1:
 	tst.w	(Ring_count).w
 	beq.s	BuildHUD_P1_NoRings
 	moveq	#0,d1
-	btst	#3,(Timer_frames+1).w
+	btst	#3,(Level_frame_counter+1).w
 	bne.s	+
 	cmpi.b	#9,(Timer_minute).w
 	bne.s	+
@@ -88069,7 +88125,7 @@ BuildHUD_P1:
 ; loc_40876:
 BuildHUD_P1_NoRings:
 	moveq	#0,d1
-	btst	#3,(Timer_frames+1).w
+	btst	#3,(Level_frame_counter+1).w
 	bne.s	BuildHUD_P1_Continued
 	addq.w	#1,d1	; make RINGS flash
 	cmpi.b	#9,(Timer_minute).w
@@ -88235,7 +88291,7 @@ BuildHUD_P2:
 	tst.w	(Ring_count_2P).w
 	beq.s	BuildHUD_P2_NoRings
 	moveq	#0,d1
-	btst	#3,(Timer_frames+1).w
+	btst	#3,(Level_frame_counter+1).w
 	bne.s	+
 	cmpi.b	#9,(Timer_minute_2P).w
 	bne.s	+
@@ -88246,7 +88302,7 @@ BuildHUD_P2:
 ; loc_409E2:
 BuildHUD_P2_NoRings:
 	moveq	#0,d1
-	btst	#3,(Timer_frames+1).w
+	btst	#3,(Level_frame_counter+1).w
 	bne.s	BuildHUD_P2_Continued
 	addq.w	#1,d1
 	cmpi.b	#9,(Timer_minute_2P).w
@@ -91270,12 +91326,12 @@ ArtNem_CNZMiniBumper:		BINCLUDE	"art/nemesis/Drop target from CNZ.nem" ; Weird b
 	even
 ArtNem_CNZFlipper:		BINCLUDE	"art/nemesis/Flippers.nem"
 	even
-ArtNem_CPZElevator:		BINCLUDE	"art/nemesis/Large moving platform from CNZ.nem"
-	even
 
 ;---------------------------------------------------------------------------------------
 ; CPZ Assets
 ;---------------------------------------------------------------------------------------
+ArtNem_CPZElevator:		BINCLUDE	"art/nemesis/Large moving platform from CPZ.nem"
+	even
 ArtNem_WaterSurface:		BINCLUDE	"art/nemesis/Top of water in HPZ and CNZ.nem"
 	even
 ArtNem_CPZBooster:		BINCLUDE	"art/nemesis/Speed booster from CPZ.nem"
@@ -91308,22 +91364,17 @@ ArtNem_ARZBarrierThing:		BINCLUDE	"art/nemesis/One way barrier from ARZ.nem" ; U
 	even
 
 ;---------------------------------------------------------------------------------------
-; EHZ Badnik Assets (Part 1) (Why is this split?)
+; EHZ/OOZ Badnik Assets
 ;---------------------------------------------------------------------------------------
+; These Badniks being grouped together here is unusual, but can be explained by two things:
+; 1. This is where all Badnik tiles were kept in the earliest prototypes.
+; 2. These are the only Badniks left from those prototypes.
 ArtNem_Buzzer:			BINCLUDE	"art/nemesis/Buzzer enemy.nem"
 	even
-
-;---------------------------------------------------------------------------------------
-; OOZ Badnik Assets
-;---------------------------------------------------------------------------------------
 ArtNem_Octus:			BINCLUDE	"art/nemesis/Octopus badnik from OOZ.nem"
 	even
 ArtNem_Aquis:			BINCLUDE	"art/nemesis/Seahorse from OOZ.nem"
 	even
-
-;---------------------------------------------------------------------------------------
-; EHZ Badnik Assets (Part 2) (Why?)
-;---------------------------------------------------------------------------------------
 ArtNem_Masher:			BINCLUDE	"art/nemesis/EHZ Pirahna badnik.nem"
 	even
 
@@ -91386,7 +91437,7 @@ ArtNem_Turtloid:		BINCLUDE	"art/nemesis/Turtle badnik from SCZ.nem"
 	even
 
 ;---------------------------------------------------------------------------------------
-; EHZ Badnik Assets (Part 3) (WTF???)
+; EHZ Badnik Assets (again)
 ;---------------------------------------------------------------------------------------
 ArtNem_Coconuts:		BINCLUDE	"art/nemesis/Coconuts badnik from EHZ.nem"
 	even
